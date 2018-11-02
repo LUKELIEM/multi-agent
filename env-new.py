@@ -83,22 +83,6 @@ class GatheringEnv(gym.Env):
         self.reset()    # Reset environment
         self.done = False
 
-
-    # A function to check if the location the agent intends to move into will result in a collision with
-    # another agent
-    def _collide(self, agent_index, next_location, current_locations):
-
-        for j, current in enumerate(current_locations):
-            if j is agent_index:      # Skip its own current location
-                continue
-            if next_location == current:   # If the location is occupied
-                # print("Collide!")
-                return True
-
-        return False
-
-
-
     # A function to take the game one step forward
     # Inputs: a list of actions indexed by agent
     def _step(self, action_n):
@@ -109,7 +93,6 @@ class GatheringEnv(gym.Env):
 
         # Initialize variables for movement and for beam
         self.beams[:] = 0
-
         movement_n = [(0, 0) for a in action_n]
 
         # Update movement if action is UP, DOWN, RIGHT or LEFT
@@ -129,73 +112,49 @@ class GatheringEnv(gym.Env):
                 (-1, 0),  # left
             ][a]
 
-        # The code below updates agent location based on proposed movements 
-        current_locations = [a for a in self.agents] 
-        for i, ((dx, dy), (x, y)) in enumerate(zip(movement_n, self.agents)):  # For each agent
-
-            if self.tagged[i]:   # skip agents that are tagged
-                continue 
-            next_ = ((x + dx), (y + dy))   # Calculate next location
-
-            if self.walls[next_]:
-                next_ = (x, y)              # Do not move into walls
-
-            # Do not move into the current location of another agent
-
-            if self._collide(i, next_, current_locations):
-                # find the first possible move that does not result in collision
-                for move in movement_n:
-                    dx, dy = move
-                    next_ = ((x + dx), (y + dy))   # Calculate possible next location
-                    if not self._collide(i, next_, current_locations):
-                        break
-                next_ = (x, y)   # If all possible moves result in collision, stay in original spot
-
-            self.agents[i] = next_
-
-        """
         # The code section below updates agent location based on actions that are movements    
         next_locations = [a for a in self.agents]  # Initialize next_locations
         # If a key is not found in the dictionary, then instead of a KeyError being thrown, a new entry 
         # is created.
         next_locations_map = collections.defaultdict(list)
 
+
         for i, ((dx, dy), (x, y)) in enumerate(zip(movement_n, self.agents)):  # For each agent
-
-            if self.tagged[i]:   # skip agents that are tagged
-                continue        
-
-            next_ = ((x + dx), (y + dy))   # Calculate next location
-
+            if self.tagged[i]:
+                continue        # skip agents that are tagged
+            next_ = ((x + dx), (y + dy))   # Update next location
             if self.walls[next_]:
-                next_ = (x, y)              # Do not move into walls
-
+                next_ = (x, y)              # Do not move beyond wall
             next_locations[i] = next_
-            next_locations_map[next_].append(i)  # append agent to next_location_map
+            next_locations_map[next_].append(i)   # Add agent number to next_location_map (???)
+            print (next_locations_map)
 
         # If there are more than 1 agent in the same location
         for overlappers in next_locations_map.values():
             if len(overlappers) > 1:
                 for i in overlappers:
                     next_locations[i] = self.agents[i]  # return agent to their previous location
-        self.agents = next_locations    # Update agent locations
-        """
+        print ("Resolve collision.")
+        print (next_locations)
+        print (next_locations_map)
+        self.agents = next_locations_map    # Update agent locations
+        print (self.agents)
 
+        # If action is ROTATE_RIGHT, ROTATE_LEFT or LASER
         for i, act in enumerate(action_n):
             if act == ROTATE_RIGHT:
                 self.orientations[i] = (self.orientations[i] + 1) % 4
             elif act == ROTATE_LEFT:
                 self.orientations[i] = (self.orientations[i] - 1) % 4
             elif act == LASER:
-                self.beams[self._viewbox_slice(i, 5, 20, offset=1)] = 1
-
+                # Laser beam is 5x20 along the orientation of the agent
+                self.beams[self._viewbox_slice(i, 5, 20, offset=1)] = 1   
 
         # Prepare obs_n, reward_n, done_n and info_n to be returned        
         obs_n = self.state_n    # obs_n is self.state_n
         reward_n = [0 for _ in range(self.n_agents)]
         done_n = [self.done] * self.n_agents
         info_n = [{}] * self.n_agents
-
 
         # This is really shitty code writing. If agent lands on a food cell, that cell is set to -15.
         # Then for each subsequent step, it is incremented by 1 until it reaches 1 again.
@@ -215,17 +174,18 @@ class GatheringEnv(gym.Env):
 
         # Respawn agent after 25 steps
         for i, tag in enumerate(self.tagged):
-            if tag == 1:     # It is time to respawn agent i
-                self.agents[i] = self.spawn_points[i]
-                self.orientations[i] = UP
-                self.tagged[i] = 0
-
+            if tag == 1:
+                # Relocate to a respawn point.
+                for spawn_point in self.spawn_points:
+                    if spawn_point not in self.agents:
+                        self.agents[i] = spawn_point
+                        break
 
         # This is where the tagged counter (25 steps) is updated
-        self.tagged = [max(i - 1, 0) for i in self.tagged]  
-
+        self.tagged = [max(i - 1, 0) for i in self.tagged]   
 
         return obs_n, reward_n, done_n, info_n
+
 
     # Generate slice(tuple) to slice out observation space for agents
     def _viewbox_slice(self, agent_index, width, depth, offset=0):
@@ -370,7 +330,7 @@ class GatheringEnv(gym.Env):
             if not self.tagged[i]:
                 fill_cell(x, y, self.agent_colors[i])
 
-        if True:
+        if False:
             # Debug view: see the first player's viewbox perspective.
             p1_state = self.state_n[0].reshape(self.viewbox_width, self.viewbox_depth, 4)
             for x in range(self.viewbox_width):
@@ -407,7 +367,7 @@ class GatheringEnv(gym.Env):
 
 
 _spec = {
-    'id': 'Gathering-Luke-v022',
+    'id': 'Gathering-Luke-v005',
     'entry_point': GatheringEnv,
     'reward_threshold': 500,   # The environment threshold at 100 appears to be too low
 }

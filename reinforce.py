@@ -29,7 +29,7 @@ parser.add_argument('--log_interval', type=int, default=10, metavar='N',
 args = parser.parse_args()
 
 
-env = GatheringEnv(n_agents=2)
+env = GatheringEnv(n_agents=2, map_name='region_single_entrance')
 env.seed(args.seed)
 torch.manual_seed(args.seed)
 
