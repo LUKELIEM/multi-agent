@@ -2,7 +2,9 @@ Multi-agent RL environment, in the style of DeepMind's [Gathering game](https://
 
 --- 
 
-[![Watch the video](gathering.gif)](https://youtu.be/GEObXRb4qM4)
+*click on picture to play video*
+
+[![Watch the video](8L1R_gathering.png)](https://youtu.be/GEObXRb4qM4)
 
 The video above shows 8 trained AI agents playing with 1 random agent.
 
