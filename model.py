@@ -21,7 +21,7 @@ class Policy(nn.Module):
     def forward(self, x):
         x = F.relu(self.affine1(x))
         action_scores = self.affine2(x)
-        return F.softmax(action_scores)
+        return F.softmax(action_scores)     # Added dim=1 to support PyTorch 0.4.1
 
     # The weights should be allowed to be saved into and load from agent-indexed model files
     # e.g. agent-1-model.pkl, agent-2-model.pkl, etc.
@@ -38,13 +38,12 @@ class Policy(nn.Module):
     def select_action(self, state):
         state = torch.from_numpy(state).float().unsqueeze(0)
         probs = self(Variable(state))   # This is tricky --> probs = Policy(state)
-        # 
-        m = torch.distributions.Categorical(probs)
-        action = m.sample()
-        # action = probs.multinomial()  old PyTorch
+
+        action = probs.multinomial()  # Pytorch version: 0.2.0
+        
         self.saved_actions.append(action)
-        return action.data[0]
-        # return action.data[0,0]
+
+        return action.data[0,0]  # Pytorch version: 0.2.0
 
 
 # Just a dumb random agent
