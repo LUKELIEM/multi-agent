@@ -27,7 +27,7 @@ class GatheringEnv(gym.Env):
 
     # Some basic parameters for the Gathering Game
     metadata = {'render.modes': ['human']}
-    scale = 20           # Used to scale to display during rendering
+    scale = 10           # Used to scale to display during rendering
 
     # Viewbox is to implement partial observable Markov game
     viewbox_width = 10
@@ -35,8 +35,7 @@ class GatheringEnv(gym.Env):
     padding = max(viewbox_width // 2, viewbox_depth - 1)  # essentially 20-1=19
 
     # To help agents distinquish between themselves, the other agents and the apple
-    agent_colors = ['red', 'red', 'yellow', 'blue', \
-        'yellow', 'yellow', 'yellow', 'yellow']    # Can support up to 8 agents
+    agent_colors = []    # input during __init__()
 
     # A function to build the game space from a text file
     def _text_to_map(self, text):
@@ -59,9 +58,14 @@ class GatheringEnv(gym.Env):
 
 
     # This is run when the environment is created
-    def __init__(self, n_agents=1, map_name='default'):
+    def __init__(self, n_agents=1, agent_tribes=['Vikings'], agent_colors=['red'], map_name='default'):
 
         self.n_agents = n_agents    # Set number of agents
+
+        # Tribal association - by tribal name and color
+        self.agent_colors = agent_colors
+        self.agent_tribes = agent_tribes
+
         self.root = None            # For rendering
 
         # Create game space from text file
@@ -77,13 +81,21 @@ class GatheringEnv(gym.Env):
         self.width = self.initial_food.shape[0]
         self.height = self.initial_food.shape[1]
 
-        # This is a partial observable Markov game. The observation for each agent is a stack of 4 frames of
-        # 10x20 pixels (view box). These 4 frames identifies:
-        #    1. Location of Food
-        #    2. ???
-        #    3. Location of agents
-        #    4. Location of the walls
-        # if and only if they are in the viewbox of the agent.
+        # This is a partial observable Markov game. The agent must be able to know which agents in 
+        # its observation space is US versus THEM. So the observation space provided by GatherEnv will 
+        # contain a stack of 10 frames of 10x20 pixels. These 10 frames identifies:
+        # 1. Location of Food
+        # 2. Location of US agents in the viewbox
+        # 3. Location of THEM agents in the viewbox
+        # 4. Location of the walls
+        # 5. TBD (Beam)
+        # 6. TBD
+        # 7. TBD
+        # 8. TBD
+        # 9. TBD
+        # 10. TBD
+        # We will implement only the first 4 frames for now.
+
         self.state_size = self.viewbox_width * self.viewbox_depth * 4
         self.observation_space = gym.spaces.MultiDiscrete([[[0, 1]] * self.state_size] * n_agents)
         self.action_space = gym.spaces.MultiDiscrete([[0, 7]] * n_agents)   # Action space for n agents
@@ -106,6 +118,22 @@ class GatheringEnv(gym.Env):
 
         return False
 
+    # A function that returns how many agents of same tribe vs different tribes the agent has fired on
+    def _laser_hits(self, kill_zone, agent_firing):
+        US = self.agent_tribes[agent_firing]   # US is the tribe of the agent that fires the laser
+        US_hit = 0
+        THEM_hit = 0   
+
+         # In case the agent lands on a cell with food, or is tagged
+        for i, a in enumerate(self.agents):
+            if i is agent_firing:       # Do not count the firing agent
+                continue
+            if kill_zone[a]:
+                if self.agent_tribes[i] is US:
+                    US_hit += 1
+                else:
+                    THEM_hit += 1
+        return US_hit, THEM_hit
 
 
     # A function to take the game one step forward
@@ -118,7 +146,6 @@ class GatheringEnv(gym.Env):
 
         # Initialize variables for movement and for beam
         self.beams[:] = 0
-
         movement_n = [(0, 0) for a in action_n]
 
         # Update movement if action is UP, DOWN, RIGHT or LEFT
@@ -164,6 +191,7 @@ class GatheringEnv(gym.Env):
                 next_ = (x, y)   # If all possible moves result in collision, stay in original spot
 
             self.agents[i] = next_
+            current_locations = [a for a in self.agents]  # Need to update current locations
 
         """
         # The code section below updates agent location based on actions that are movements    
@@ -194,19 +222,31 @@ class GatheringEnv(gym.Env):
         """
 
         for i, act in enumerate(action_n):
+
+            # initialize agent's laser parameters
+            self.fire_laser[i] = False
+            self.kill_zones[i][:] = 0
+            self.US_tagged[i] = 0 
+            self.THEM_tagged[i] = 0
+
             if act == ROTATE_RIGHT:
                 self.orientations[i] = (self.orientations[i] + 1) % 4
             elif act == ROTATE_LEFT:
                 self.orientations[i] = (self.orientations[i] - 1) % 4
             elif act == LASER:
-                self.beams[self._viewbox_slice(i, 5, 20, offset=1)] = 1
+                self.fire_laser[i] = True       # agent has fired his laser
+                laser_field = self._viewbox_slice(i, 5, 20, offset=1)
+                self.kill_zones[i][laser_field ] = 1  # define the kill zone
+                self.beams[laser_field ] = 1    # place beam on kill zone
+                # register how many US vs THEM agents have been fired upon
+                self.US_tagged[i], self.THEM_tagged[i] = self._laser_hits(self.kill_zones[i], i)
 
 
         # Prepare obs_n, reward_n, done_n and info_n to be returned        
         obs_n = self.state_n    # obs_n is self.state_n
         reward_n = [0 for _ in range(self.n_agents)]
         done_n = [self.done] * self.n_agents
-        info_n = [{}] * self.n_agents
+        info_n = [None for _ in range(self.n_agents)]   # initialize agent info
 
 
         # This is really shitty code writing. If agent lands on a food cell, that cell is set to -15.
@@ -224,18 +264,27 @@ class GatheringEnv(gym.Env):
                 reward_n[i] = 1       # Agent is given reward of 1
             if self.beams[a]:
                 self.tagged[i] = 25   # If agent is tagged, it is removed from the game for 25 steps
+                self.agents[i] = (-1,-1)  # It is place in Nirvana
 
-        # Respawn agent after 25 steps
+        # Respawn agent after 25 steps; tagged should always be between 0 to 25
         for i, tag in enumerate(self.tagged):
-            if tag == 1:     # It is time to respawn agent i
-                self.agents[i] = self.spawn_points[i]
-                self.orientations[i] = UP
-                self.tagged[i] = 0
+            if tag > 1:   # agent has been tagged
+                self.tagged[i] = tag - 1   # count down tagged counter (from 25)
+            elif tag == 1:     # When tagged is 1, it is time to respawn agent i
 
+                # But need to check there is no agent at the respawn location
+                current_locations = [a for a in self.agents]
 
-        # This is where the tagged counter (25 steps) is updated
-        self.tagged = [max(i - 1, 0) for i in self.tagged]  
+                next_ = self.spawn_points[i]
+                if self._collide(i, next_, current_locations):
+                    self.agents[i] = (-1,-1)    # Stay in Nirvana if there is collision
+                else:
+                    self.agents[i] = next_      # Otherwise, respawn  
+                    self.orientations[i] = UP
+                    self.tagged[i] = 0
 
+        info_n = [(self.tagged[i], self.fire_laser[i], self.US_tagged[i], self.THEM_tagged[i]) \
+                for i in range(self.n_agents)] 
 
         return obs_n, reward_n, done_n, info_n
 
@@ -266,15 +315,11 @@ class GatheringEnv(gym.Env):
     @property
     def state_n(self):
 
-        # Create a game space for agent locating
-        agents = np.zeros_like(self.food)  
-
-        # self.agent is a list of agent locations indexed by agent index
-        for i, loc in enumerate(self.agents):    
-            if not self.tagged[i]:
-                agents[loc] = 1     # Mark the agent's location
-
         food = self.food.clip(min=0)   # Mark the food's location
+
+        # Create game spaces for agent locating US vs THEM agents
+        US = [np.zeros_like(self.food) for i in range(self.n_agents)]
+        THEM = [np.zeros_like(self.food) for i in range(self.n_agents)]
 
         # Zero out next states for the agents
         s = np.zeros((self.n_agents, self.viewbox_width, self.viewbox_depth, 4))
@@ -285,15 +330,29 @@ class GatheringEnv(gym.Env):
             if self.tagged[i]:
                 continue     # Skip if agent has been tagged out of the game
 
+            # go through the list of agents
+            for j, loc in enumerate(self.agents):    
+                if not self.tagged[j]:    # if the agent is in the game (not tagged out)
+
+                    # compare the agent's tribe of the agent against that of the observing agent
+                    if self.agent_tribes[i] == self.agent_tribes[j]:    
+                        US[i][loc] = 1     # Mark US agent's location
+                        # For debug only
+                        # print ('Agent{} of Tribe {} is US of Tribe {}'.format(j, self.agent_tribes[j], self.agent_tribes[i]))
+                    else:
+                        THEM[i][loc] = 1     # Mark THEM agent's location
+                        # For debug only
+                        # print ('Agent{} Tribe {} is THEM of Tribe{}'.format(j, self.agent_tribes[j], self.agent_tribes[i]))
+
             # If agent is not tagged, ....
 
             # Construct the full state for the game, which consists of:
             # 1. Location of Food
-            # 2. ???
-            # 3. Location of agents
+            # 2. Location of US agents in the viewbox
+            # 3. Location of THEM agents in the viewbox
             # 4. Location of the walls
-            full_state = np.stack([food, np.zeros_like(food), agents, self.walls], axis=-1)
-            full_state[x, y, 2] = 0   # Zero out the agent's location ???
+            full_state = np.stack([food, US[i], THEM[i], self.walls], axis=-1)
+            # full_state[x, y, 2] = 0   # Zero out the agent's location ???
 
             # Create observation space for learning agent using _viewbox_slice()
             xs, ys = self._viewbox_slice(i, self.viewbox_width, self.viewbox_depth)
@@ -328,7 +387,13 @@ class GatheringEnv(gym.Env):
         self.agents = [(i + self.padding + 1, self.padding + 1) for i in range(self.n_agents)]
         self.spawn_points = list(self.agents)
         self.orientations = [UP for _ in self.agents]   # Orientation = UP
+
+        # Agent's Laser parameters
         self.tagged = [0 for _ in self.agents]          # Tagged = False
+        self.fire_laser = [False for _ in self.agents]    # Fire Laser = False
+        self.kill_zones = [np.zeros_like(self.food) for i in range(self.n_agents)]  # laser kill zones
+        self.US_tagged= [0 for _ in self.agents]          # agents of same tribe tagged = 0
+        self.THEM_tagged= [0 for _ in self.agents]        # agents of different tribes tagged = 0
 
         return self.state_n  # Since state_n is a property object, so it will call function _state_n()
 
@@ -349,6 +414,7 @@ class GatheringEnv(gym.Env):
             self._close_view()
             return
 
+        # The canvas is defined by the imported map with a padding of 20 cells around it
         canvas_width = self.width * self.scale
         canvas_height = self.height * self.scale
 
@@ -362,6 +428,7 @@ class GatheringEnv(gym.Env):
         self.canvas.delete(tk.ALL)
         self.canvas.create_rectangle(0, 0, canvas_width, canvas_height, fill='black')
 
+
         def fill_cell(x, y, color):
             self.canvas.create_rectangle(
                 x * self.scale,
@@ -371,6 +438,7 @@ class GatheringEnv(gym.Env):
                 fill=color,
             )
 
+        # Refresh the canvas by placing pixels for laser beams, food units and walls        
         for x in range(self.width):
             for y in range(self.height):
                 if self.beams[x, y] == 1:
@@ -380,8 +448,9 @@ class GatheringEnv(gym.Env):
                 if self.walls[x, y] == 1:
                     fill_cell(x, y, 'grey')
 
+        # Place the agents onto the canvas
         for i, (x, y) in enumerate(self.agents):
-            if not self.tagged[i]:
+            if self.tagged[i] is 0:    # provided agent i has not been tagged
                 fill_cell(x, y, self.agent_colors[i])
 
         if True:
@@ -389,22 +458,22 @@ class GatheringEnv(gym.Env):
             p1_state = self.state_n[0].reshape(self.viewbox_width, self.viewbox_depth, 4)
             for x in range(self.viewbox_width):
                 for y in range(self.viewbox_depth):
-                    food, me, other, wall = p1_state[x, y]
-                    assert sum((food, me, other, wall)) <= 1
+                    food, us, them, wall = p1_state[x, y]
+                    assert sum((food, us, them, wall)) <= 1
                     y_ = self.viewbox_depth - y - 1
                     if food:
                         fill_cell(x, y_, 'green')
-                    elif me:
+                    elif us:
                         fill_cell(x, y_, 'cyan')
-                    elif other:
+                    elif them:
                         fill_cell(x, y_, 'red')
                     elif wall:
                         fill_cell(x, y_, 'gray')
             self.canvas.create_rectangle(
                 0,
                 0,
-                self.viewbox_width * self.scale,
-                self.viewbox_depth * self.scale,
+                (self.viewbox_width + 1)* self.scale,
+                (self.viewbox_depth + 1) * self.scale,
                 outline='blue',
             )
 
@@ -421,7 +490,7 @@ class GatheringEnv(gym.Env):
 
 
 _spec = {
-    'id': 'Gathering-Luke-v031',
+    'id': 'Gathering-Luke-v063',
     'entry_point': GatheringEnv,
     'reward_threshold': 500,   # The environment threshold at 100 appears to be too low
 }
